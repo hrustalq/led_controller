@@ -7,6 +7,7 @@
 
 #define LED_PIN     2
 #define NUM_LEDS    30
+#define MAX_RETRIES 5
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
 #define MAX_RETRIES 5
@@ -17,7 +18,7 @@
 
 // structures setup
 
-struct {
+struct DeviceSetup {
   char id[30];
   char wiFiSsid[30];
   char wiFiPassword[30];
@@ -26,8 +27,22 @@ struct {
   char port[30];
   char ledStripOnColor[30];
   char ledStripOffColor[30];
-  char active[1];
-} deviceSetup;
+  char active[10];
+
+  DeviceSetup() {
+    strcpy(id, "");
+    strcpy(wiFiSsid, "");
+    strcpy(wiFiPassword, "");
+    strcpy(targetId, "");
+    strcpy(ipAddress, "");
+    strcpy(port, "3000");
+    strcpy(ledStripOnColor, "");
+    strcpy(ledStripOffColor, "");
+    strcpy(active, "3");
+  }
+};
+
+DeviceSetup deviceSetup;
 
 // common entities
 
@@ -59,14 +74,22 @@ void setupLed() {
 }
 
 void paintLedStrip() {
-  Serial.println(bool(deviceSetup.active));
-  if (bool(deviceSetup.active)) {
-    fill_solid(leds, NUM_LEDS, CRGB::Green);
-  } else {
-    fill_solid(leds, NUM_LEDS, CRGB::Red);
+  CRGB color = CRGB::Yellow;
+
+  switch (atoi(deviceSetup.active)) {
+    case 0:
+        color = CRGB::Green;
+        break;
+    case 1:
+        color = CRGB::Red;
+        break;
+    default:
+        color = CRGB::Yellow;
+        break;
   }
+
+  fill_solid(leds, NUM_LEDS, color);
   FastLEDHub.show();
-  delay(1000);
 }
 
 // eeprom workaround
@@ -76,23 +99,18 @@ void initEeprom() {
   EEPROM.get(0, deviceSetup);
 
   Serial.println("Read from EEPROM:");
-
   Serial.print("WiFi SSID: ");
   Serial.println(deviceSetup.wiFiSsid);
   Serial.print("WiFi password: ");
   Serial.println(deviceSetup.wiFiPassword);
-
   Serial.print("ID: ");
   Serial.println(deviceSetup.id);
-
   Serial.print("Server ip: ");
   Serial.println(deviceSetup.ipAddress);
   Serial.print("Server port: ");
   Serial.println(deviceSetup.port);
-
   Serial.print("Target id: ");
   Serial.println(deviceSetup.targetId);
-
   Serial.print("Led strip on color: ");
   Serial.println(deviceSetup.ledStripOnColor);
   Serial.print("Led strip off color: ");
@@ -105,11 +123,10 @@ void connectWiFi() {
   WiFi.mode(WIFI_STA);
   delay(100);
 
-  Serial.print("Connecting to WiFi ");
+  Serial.println("Connecting to WiFi ");
 
   for (int attempt = 0; attempt < MAX_RETRIES; ++attempt) {
     WiFi.begin(deviceSetup.wiFiSsid, deviceSetup.wiFiPassword);
-    Serial.print(".");
 
     unsigned long startAttemptTime = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < RETRY_DELAY) {
@@ -122,98 +139,88 @@ void connectWiFi() {
       Serial.print("IP Address: ");
       Serial.println(WiFi.localIP());
       return;
-    } else {
-      Serial.print(" (Attempt ");
-      Serial.print(attempt + 1);
-      Serial.print("/");
-      Serial.print(MAX_RETRIES);
-      Serial.print(" failed)");
-
-      if (attempt < MAX_RETRIES - 1) {
-        Serial.print(", retrying in ");
-        Serial.print(RETRY_DELAY / 1000);
-        Serial.println(" seconds...");
-        delay(RETRY_DELAY);
-      } else {
-        Serial.println();
-        Serial.println("Failed to connect to WiFi.");
-
-        // Create WiFi network with unique ID (MAC address)
-        Serial.println("Falling back to AP mode.");
-        WiFi.disconnect();
-        WiFi.mode(WIFI_AP);
-        delay(100);
-
-        // Check if unique_id exists in user_settings
-        String uniqueSSID = "ESP32_";
-        if (sizeof(deviceSetup.id) > 2) {
-          uniqueSSID += deviceSetup.id;
-        } else {
-          uniqueSSID += WiFi.macAddress();
-        }
-        WiFi.softAP(uniqueSSID.c_str());
-        Serial.print("WiFi access point network created. SSID: ");
-        Serial.println(uniqueSSID);
-        Serial.print("IP Address (AP mode): ");
-        Serial.println(WiFi.softAPIP());
-        return;
-      }
     }
+
+    Serial.printf(" (Attempt %d/%d failed), retrying in %d seconds...\n", attempt + 1, MAX_RETRIES, RETRY_DELAY / 1000);
+    delay(RETRY_DELAY);
   }
+
+  // If connection fails after max retries, fall back to AP mode
+  Serial.println("Failed to connect to WiFi. Falling back to AP mode.");
+  WiFi.disconnect();
+  WiFi.mode(WIFI_AP);
+  delay(100);
+
+  // Create WiFi access point network
+  String uniqueSSID = "ESP32_" + String(deviceSetup.id);
+  WiFi.softAP(uniqueSSID.c_str());
+
+  Serial.print("WiFi access point network created. SSID: ");
+  Serial.println(uniqueSSID);
+  Serial.print("IP Address (AP mode): ");
+  Serial.println(WiFi.softAPIP());
 }
 
 // web ui for initial setup
 
 String settingsHtmlForm = R"(
 <!DOCTYPE html>
-<html lang='ru'>
-  <head>
-    <meta charset='UTF-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <title>Configuration Form</title>
-  </head>
-  <body>
-    <h2>Configuration Form</h2>
-    <form id='configForm' method='post' action='/save-settings'>
-      <label for='wifiSSID'>WiFi SSID:</label><br>
-      <input type='text' id='wifiSSID' name='wifiSSID' required><br>
-
-      <label for='wifiPassword'>WiFi Password:</label><br>
-      <input type='password' id='wifiPassword' name='wifiPassword' required><br>
-
-      <label for='id'>ID:</label><br>
-      <input type='text' id='id' name='id' required><br>
-
-      <label for='targetId'>Target host ID:</label><br>
-      <input type='text' id='targetId' name='targetId' required><br>
-
-      <label for='serverIP'>Server IP Address:</label><br>
-      <input type='text' id='serverIP' name='serverIP' required><br>
-
-      <label for='serverPort'>Server Port:</label><br>
-      <input type='number' id='serverPort' name='serverPort' required><br><br>
-
-      <input type='submit' value='Submit'>
-    </form>
-    <button id="blink-button">Blink led</button>
-  </body>
-  <script>
-    const button = document.getElementById('blink-button');
-    button.addEventListener('click', (e) => {
-      e.preventDefault();
-      fetch('/blink', {
-        method: 'POST',
-      });
-    });
-  </script>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Led controller</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+</head>
+<body style="min-height: 100dvh; width: 100%;">
+    <div class="container my-4">
+        <h2 style="text-align: center;">Настройки</h2>
+        <div class="mb-3">
+            <form class="d-flex flex-column" id='configForm' method='post' action='/save-settings'>
+                <label class="form-label" for='wifiSSID'>WiFi SSID:</label>
+                <input class="form-control" type='text' id='wifiSSID' name='wifiSSID' required><br>
+          
+                <label class="form-label" for='wifiPassword'>WiFi Password:</label>
+                <input class="form-control" type='password' id='wifiPassword' name='wifiPassword' required><br>
+          
+                <label class="form-label" for='id'>ID:</label>
+                <input class="form-control" type='text' id='id' name='id' required><br>
+          
+                <label class="form-label" for='targetId'>Target host ID:</label>
+                <input class="form-control" type='text' id='targetId' name='targetId' required><br>
+          
+                <label class="form-label" for='serverIP'>Server IP Address:</label>
+                <input class="form-control" type='text' id='serverIP' name='serverIP' required><br>
+          
+                <label class="form-label" for='serverPort'>Server Port:</label>
+                <input class="form-control" type='number' id='serverPort' name='serverPort' required><br><br>
+          
+                <input class="btn btn-primary" type='submit' value='Сохранить'>
+              </form>
+        </div>
+        <div class="mb-3">
+            <button class="btn btn-secondary" id="blink-button">Blink Led</button>
+        </div>
+    </div>
+</body>
 </html>
 )";
 
 // http client
+unsigned long lastRequestTime = 0;
+const unsigned long requestInterval = 5000;
+
 void httpHostStatusRequest() {
   if (deviceSetup.targetId[0] == '\0' || deviceSetup.ipAddress[0] == '\0') {
     return;
   }
+
+  unsigned long currentTime = millis();
+  if (currentTime - lastRequestTime < requestInterval) {
+    return;
+  }
+
+  lastRequestTime = currentTime;
 
   String URL = "http://" + String(deviceSetup.ipAddress) + ":" + String(deviceSetup.port) + "/hosts/" + String(deviceSetup.targetId) + "/status";
 
@@ -224,26 +231,15 @@ void httpHostStatusRequest() {
   if (httpCode == HTTP_CODE_OK) {
     String payload = http.getString();
     payload.toCharArray(deviceSetup.active, sizeof(deviceSetup.active));
-    Serial.print("Status:");
-    Serial.print(payload);
-    Serial.print(" Target:");
-    Serial.print(deviceSetup.targetId);
-    Serial.print(" active:");
-    Serial.print(deviceSetup.active);
   } else {
+    strcpy(deviceSetup.active, "3");
     Serial.printf("[HTTP] ... failed, error: %s\n", http.errorToString(httpCode).c_str());
   }
 
   http.end();
-
-  delay(1000);
 }
 
 // web server
-
-void fetchActiveStatus() {
-
-}
 
 void handesSettingsPageVisit() {
   server.send(200, "text/html", settingsHtmlForm);
@@ -294,6 +290,7 @@ void setupWebServer() {
 
 
 void setup() {
+  delay(1000);
   http.addHeader("Content-Type", "application/json");
   pinoutSetup();
   startSerialCommunication();
