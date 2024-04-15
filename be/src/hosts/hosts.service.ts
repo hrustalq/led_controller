@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
@@ -7,6 +7,7 @@ import { Host } from './entities/host.entity';
 import { GetHostsResponseDto } from './dto/get-hosts.dto';
 import { Session } from './entities/session.entity';
 import { GetSessionsResponseDto } from './dto/get-sessions.dto';
+import { AdaptedHost } from './entities/adapted-host.entity';
 
 @Injectable()
 export class HostsService {
@@ -21,20 +22,21 @@ export class HostsService {
     'GIZMO_API_OPERATOR_CREDENTIALS',
   );
 
-  public activeHosts: Host[] = [];
-  public hosts: Host[] = [];
-  public activeSessions: Session[] = [];
+  public hosts = new Map<number, AdaptedHost>();
+  public activeSessions = new Map<number, Session>()
 
-  @Cron(CronExpression.EVERY_SECOND)
+  @Cron(CronExpression.EVERY_5_SECONDS)
   filterHostsToActive() {
-    this.activeSessions.forEach((value, idx) => {
-      if (this.hosts[idx].number === value.hostNumber) {
-        this.activeHosts.push(this.hosts[idx]);
+    this.hosts.forEach((host) => {
+      if (this.activeSessions.has(host.number)) {
+        host.active = 1;
+      } else {
+        host.active = 0;
       }
     });
   }
 
-  @Cron(CronExpression.EVERY_SECOND)
+  @Cron(CronExpression.EVERY_5_SECONDS)
   async getActiveUserSessions() {
     const REQUEST_URL = `${this.GIZMO_API_URL}/api/usersessions/activeinfo`;
     const response = await firstValueFrom(
@@ -44,9 +46,12 @@ export class HostsService {
         },
       }),
     ).then((response) => response.data);
-    if (!response.result.length || response.result === this.activeSessions)
-      return;
-    this.activeSessions = [...response.result];
+    if (!response.result.length) {
+      this.activeSessions.clear();
+    };
+    response.result.forEach((activeSession) => {
+      this.activeSessions.set(activeSession.hostNumber, activeSession);
+    });
   }
   @Cron(CronExpression.EVERY_HOUR)
   async getAllHosts() {
@@ -63,9 +68,11 @@ export class HostsService {
         console.log(error);
       });
     if (response && response.result.length) {
-      const hosts = response.result.filter((host) => !host.isDeleted);
-      if (!hosts.length || hosts === this.hosts) return;
-      this.hosts = [...hosts].sort((a, b) => a.number - b.number);
+      response.result.forEach((host) => {
+        if (!host.isDeleted) {
+          this.hosts.set(host.number, {...host, active: 0})
+        }
+      });
     } else return;
   }
 
@@ -73,7 +80,9 @@ export class HostsService {
     return this.hosts;
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} host`;
+  findActive(id: number) {
+    if (this.hosts.has(id)) {
+      return this.hosts.get(id).active
+    } else return;
   }
 }
