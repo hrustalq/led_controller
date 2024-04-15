@@ -4,6 +4,8 @@ DS_Store
 # IDE - specific
 .vscode
 .idea
+dist
+build
 
 # environment
 .env
